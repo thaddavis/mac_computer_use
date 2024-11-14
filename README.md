@@ -94,3 +94,8 @@ streamlit run streamlit.py
 
 > [!IMPORTANT]
 > The Beta API used in this reference implementation is subject to change. Please refer to the [API release notes](https://docs.anthropic.com/en/release-notes/api) for the most up-to-date information.
+
+## Debugging
+
+streamlit run streamlit_app.py --server.port=8501 &
+python -m debugpy --listen 5678 --wait-for-client streamlit_app.py
