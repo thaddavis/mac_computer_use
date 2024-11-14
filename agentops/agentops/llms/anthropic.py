@@ -1,3 +1,4 @@
+from functools import cached_property
 import pprint
 from typing import Optional
 import json
@@ -14,6 +15,15 @@ from ..singleton import singleton
 from anthropic import _legacy_response
 
 from anthropic.resources.beta.messages.messages import MessagesWithRawResponse, AsyncMessagesWithRawResponse
+
+class PatchedMessagesWithRawResponse:
+    def __init__(self, messages_instance, patched_create_func):
+        self.messages_instance = messages_instance
+        self.patched_create_func = patched_create_func
+
+    def create(self, *args, **kwargs):
+        # Call the patched function for the raw response
+        return self.patched_create_func(*args, **kwargs)
 
 @singleton
 class AnthropicProvider(InstrumentedProvider):
@@ -166,11 +176,6 @@ class AnthropicProvider(InstrumentedProvider):
 
             self._safe_record(session, llm_event)
         except Exception as e:
-            print("7")
-            print("777")
-            # print(llm_event)
-            print("777")
-
             self._safe_record(session, ErrorEvent(trigger_event=llm_event, exception=e))
             kwargs_str = pprint.pformat(kwargs)
             response = pprint.pformat(response)
@@ -188,6 +193,8 @@ class AnthropicProvider(InstrumentedProvider):
 
         self._override_completion()
         self._override_async_completion()
+
+        # Define a new class for the patched `MessagesWithRawResponse`
 
     def _override_completion(self):
         from anthropic.resources import messages, Beta
@@ -214,15 +221,12 @@ class AnthropicProvider(InstrumentedProvider):
         def create_patched_function(is_beta=False, is_raw=False):
             print("10")
 
-            def patched_function(*args, **kwargs):
-                print("10a")
+            def patched_function(messages_instance, *args, **kwargs):
                 init_timestamp = get_ISO_time()
                 session = kwargs.get("session", None)
                 if "session" in kwargs.keys():
                     del kwargs["session"]
 
-
-                print("10b")
                 completion_override = fetch_completion_override_from_time_travel_cache(
                     kwargs
                 )
@@ -240,7 +244,6 @@ class AnthropicProvider(InstrumentedProvider):
 
                     for pydantic_model in pydantic_models:
                         try:
-                            print("10c")
                             result_model = pydantic_model.model_validate_json(
                                 completion_override
                             )
@@ -276,8 +279,7 @@ class AnthropicProvider(InstrumentedProvider):
                 #     self.original_create_beta if is_beta else self.original_create
                 # )
 
-                result = original_func(*args, **kwargs)
-                print("10e")
+                result = original_func(messages_instance, *args, **kwargs)
                 return self.handle_response(
                     result, kwargs, init_timestamp, session=session
                 )
@@ -287,7 +289,15 @@ class AnthropicProvider(InstrumentedProvider):
         # Override the original methods with the patched ones
         messages.Messages.create = create_patched_function(is_beta=False)
         beta_messages.Messages.create = create_patched_function(is_beta=True)
-        beta_messages.Messages.with_raw_response = create_patched_function(is_beta=True, is_raw=True)
+        # beta_messages.Messages.with_raw_response = create_patched_function(is_beta=True, is_raw=True)
+        
+        # Patch `with_raw_response` property
+        def patched_with_raw_response(self):
+            # Automatically pass `self` (the instance of Messages) as `messages_instance`
+            return PatchedMessagesWithRawResponse(self, create_patched_function(is_beta=True, is_raw=True).__get__(self))
+
+        # Apply the patched property
+        beta_messages.Messages.with_raw_response = property(patched_with_raw_response)
 
         """
         WTF beta_messages.Messages.with_raw_response.create = create_patched_function(is_beta=True)
@@ -362,9 +372,15 @@ class AnthropicProvider(InstrumentedProvider):
                 # Call the original function with its original arguments
                 original_func = None
                 if is_raw and is_beta:
+                    # original_func = (
+                    #     self.original_async_with_raw_reponse
+                    # )
                     original_func = (
                         self.original_async_with_raw_reponse
                     )
+                    def patched_with_raw_response(self):
+                        return original_func(self)
+                    original_func  = cached_property(patched_with_raw_response)
                 elif is_beta:
                     original_func = self.original_create_async_beta
                 else:
