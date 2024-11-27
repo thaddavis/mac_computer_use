@@ -1,15 +1,16 @@
-from pprint import pformat
-from functools import wraps
-from datetime import datetime, timezone
 import inspect
-from typing import Union
-import requests
 import json
-from importlib.metadata import version, PackageNotFoundError
+from datetime import datetime, timezone
+from functools import wraps
+from importlib.metadata import PackageNotFoundError, version
+from pprint import pformat
+from typing import Any, Optional, Union
+from uuid import UUID
+from .descriptor import AgentOpsDescriptor
+
+import requests
 
 from .log_config import logger
-from uuid import UUID
-from importlib.metadata import version
 
 
 def get_ISO_time():
@@ -128,6 +129,8 @@ def check_call_stack_for_agent_id() -> Union[UUID, None]:
                 return getattr(var, "agent_ops_agent_id")
     return None
 
+def check_call_stack_for_agent_id() -> Union[UUID, None]:
+    return AgentOpsDescriptor.from_stack()
 
 def get_agentops_version():
     try:

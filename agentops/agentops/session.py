@@ -329,7 +329,7 @@ class Session:
 
                 serialized_payload = safe_serialize(payload).encode("utf-8")
                 try:
-                    print('&(&(&(& HttpClient.post(')
+                    # print('&(&(&(& HttpClient.post(')
 
                     HttpClient.post(
                         f"{self.config.endpoint}/v2/create_events",

@@ -1,7 +1,9 @@
-from functools import cached_property
+import json
 import pprint
 from typing import Optional
-import json
+
+from anthropic import APIResponse
+from anthropic._legacy_response import LegacyAPIResponse
 
 from agentops.llms.instrumented_provider import InstrumentedProvider
 from agentops.time_travel import fetch_completion_override_from_time_travel_cache
@@ -12,18 +14,6 @@ from ..log_config import logger
 from ..helpers import check_call_stack_for_agent_id, get_ISO_time
 from ..singleton import singleton
 
-from anthropic import _legacy_response
-
-from anthropic.resources.beta.messages.messages import MessagesWithRawResponse, AsyncMessagesWithRawResponse
-
-class PatchedMessagesWithRawResponse:
-    def __init__(self, messages_instance, patched_create_func):
-        self.messages_instance = messages_instance
-        self.patched_create_func = patched_create_func
-
-    def create(self, *args, **kwargs):
-        # Call the patched function for the raw response
-        return self.patched_create_func(*args, **kwargs)
 
 @singleton
 class AnthropicProvider(InstrumentedProvider):
@@ -40,33 +30,18 @@ class AnthropicProvider(InstrumentedProvider):
     def handle_response(
         self, response, kwargs, init_timestamp, session: Optional[Session] = None
     ):
-        print("1")
-
         """Handle responses for Anthropic"""
         from anthropic import Stream, AsyncStream
         from anthropic.resources import AsyncMessages
         import anthropic.resources.beta.messages.messages as beta_messages
-        from anthropic.resources.beta.messages.messages import Messages
         from anthropic.types import Message
-
-        print("2")
-
-        print()
-        print("kwargs: ", kwargs)
-        print()
-
-        # kwargs = json.dumps(kwargs)
-        # kwargs = json.dumps(kwargs, default=str)
 
         llm_event = LLMEvent(init_timestamp=init_timestamp, params=kwargs)
 
-        print("3")
         if session is not None:
             llm_event.session_id = session.session_id
 
         def handle_stream_chunk(chunk: Message):
-            print("4")
-
             try:
                 # We take the first chunk and accumulate the deltas from all subsequent chunks to build one full chat completion
                 if chunk.type == "message_start":
@@ -127,8 +102,6 @@ class AnthropicProvider(InstrumentedProvider):
 
         # if the response is a generator, decorate the generator
         if isinstance(response, Stream):
-            print("6")
-
             def generator():
                 for chunk in response:
                     handle_stream_chunk(chunk)
@@ -138,8 +111,6 @@ class AnthropicProvider(InstrumentedProvider):
 
         # For asynchronous AsyncStream
         if isinstance(response, AsyncStream):
-            print("*** For asynchronous AsyncStream ***")
-
             async def async_generator():
                 async for chunk in response:
                     handle_stream_chunk(chunk)
@@ -149,10 +120,6 @@ class AnthropicProvider(InstrumentedProvider):
 
         # For async AsyncMessages
         if isinstance(response, AsyncMessages):
-            print("*** *** ***")
-            print("****** For async AsyncMessages ******")  
-            print("*** *** ***")
-
             async def async_generator():
                 async for chunk in response:
                     handle_stream_chunk(chunk)
@@ -162,17 +129,44 @@ class AnthropicProvider(InstrumentedProvider):
 
         # Handle object responses
         try:
-            llm_event.returns = response.model_dump()
-            llm_event.agent_id = check_call_stack_for_agent_id()
-            llm_event.prompt = kwargs["messages"]
-            llm_event.prompt_tokens = response.usage.input_tokens
-            llm_event.completion = {
-                "role": "assistant",
-                "content": response.content[0].text,
-            }
-            llm_event.completion_tokens = response.usage.output_tokens
-            llm_event.model = response.model
+            # AttributeError("'LegacyAPIResponse' object has no attribute 'model_dump'")
+            if isinstance(response, (APIResponse, LegacyAPIResponse)) or not hasattr(
+                response, "model_dump"
+            ):
+                """
+                response's data structure:
+                dict_keys(['id', 'type', 'role', 'model', 'content', 'stop_reason', 'stop_sequence', 'usage'])
+                {'id': 'msg_018Gk9N2pcWaYLS7mxXbPD5i', 'type': 'message', 'role': 'assistant', 'model': 'claude-3-5-sonnet-20241022', 'content': [{'type': 'text', 'text': 'I\'ll help you investigate, but I notice you\'ve just written "stack" without any context. Before I can assist effectively, I need to know:\n\n1. What kind of stack information are you looking for? (e.g., technology stack, call stack, stack trace from an error)\n2. If there\'s a specific program or process you want to examine\n3. What specific details you\'re trying to understand\n\nPlease provide more details about what stack information you\'re interested in, and I\'ll help you analyze it using the available tools.'}], 'stop_reason': 'end_turn', 'stop_sequence': None, 'usage': {'input_tokens': 2419, 'output_tokens': 116}}
+                """
+                response_data = json.loads(response.text)
+                llm_event.returns = response_data
+                llm_event.model = response_data["model"]
+                llm_event.completion = {
+                    "role": response_data.get("role"),
+                    "content": response_data.get("content")[0].get("text")
+                    if response_data.get("content")
+                    else "",
+                }
+                if usage := response_data.get("usage"):
+                    llm_event.prompt_tokens = usage.get("input_tokens")
+                    llm_event.completion_tokens = usage.get("output_tokens")
+
+            # Han
+            else:
+                # This bets on the fact that the response object has a model_dump method
+                llm_event.returns = response.model_dump()
+                llm_event.prompt_tokens = response.usage.input_tokens
+                llm_event.completion_tokens = response.usage.output_tokens
+
+                llm_event.completion = {
+                    "role": "assistant",
+                    "content": response.content[0].text,
+                }
+                llm_event.model = response.model
+
             llm_event.end_timestamp = get_ISO_time()
+            llm_event.prompt = kwargs["messages"]
+            llm_event.agent_id = check_call_stack_for_agent_id()
 
             self._safe_record(session, llm_event)
         except Exception as e:
@@ -221,7 +215,7 @@ class AnthropicProvider(InstrumentedProvider):
         def create_patched_function(is_beta=False, is_raw=False):
             print("10")
 
-            def patched_function(messages_instance, *args, **kwargs):
+            def patched_function(*args, **kwargs):
                 init_timestamp = get_ISO_time()
                 session = kwargs.get("session", None)
                 if "session" in kwargs.keys():
@@ -265,21 +259,11 @@ class AnthropicProvider(InstrumentedProvider):
                     )
 
                 # Call the original function with its original arguments
-                original_func = None
-                if is_raw and is_beta:
-                    original_func = (
-                        self.original_with_raw_reponse_create
-                    )
-                elif is_beta:
-                    original_func = self.original_create_beta
-                else:
-                    original_func = self.original_create
-
-                # original_func = (
-                #     self.original_create_beta if is_beta else self.original_create
-                # )
-
-                result = original_func(messages_instance, *args, **kwargs)
+                # Call the original function with its original arguments
+                original_func = (
+                    self.original_create_beta if is_beta else self.original_create
+                )
+                result = original_func(*args, **kwargs)
                 return self.handle_response(
                     result, kwargs, init_timestamp, session=session
                 )
@@ -289,20 +273,6 @@ class AnthropicProvider(InstrumentedProvider):
         # Override the original methods with the patched ones
         messages.Messages.create = create_patched_function(is_beta=False)
         beta_messages.Messages.create = create_patched_function(is_beta=True)
-        # beta_messages.Messages.with_raw_response = create_patched_function(is_beta=True, is_raw=True)
-        
-        # Patch `with_raw_response` property
-        def patched_with_raw_response(self):
-            # Automatically pass `self` (the instance of Messages) as `messages_instance`
-            return PatchedMessagesWithRawResponse(self, create_patched_function(is_beta=True, is_raw=True).__get__(self))
-
-        # Apply the patched property
-        beta_messages.Messages.with_raw_response = property(patched_with_raw_response)
-
-        """
-        WTF beta_messages.Messages.with_raw_response.create = create_patched_function(is_beta=True)
-        """
-
 
     def _override_async_completion(self):
         from anthropic.resources import messages, Beta
@@ -370,28 +340,11 @@ class AnthropicProvider(InstrumentedProvider):
                     )
 
                 # Call the original function with its original arguments
-                original_func = None
-                if is_raw and is_beta:
-                    # original_func = (
-                    #     self.original_async_with_raw_reponse
-                    # )
-                    original_func = (
-                        self.original_async_with_raw_reponse
-                    )
-                    def patched_with_raw_response(self):
-                        return original_func(self)
-                    original_func  = cached_property(patched_with_raw_response)
-                elif is_beta:
-                    original_func = self.original_create_async_beta
-                else:
-                    original_func = self.original_async_with_raw_reponse
-
-                # Call the original function with its original arguments
-                # original_func = (
-                #     self.original_create_async_beta
-                #     if is_beta
-                #     else self.original_create_async
-                # )
+                original_func = (
+                    self.original_create_async_beta
+                    if is_beta
+                    else self.original_create_async
+                )
                 
                 result = await original_func(*args, **kwargs)
                 return self.handle_response(
@@ -403,7 +356,6 @@ class AnthropicProvider(InstrumentedProvider):
         # Override the original methods with the patched ones
         messages.AsyncMessages.create = create_patched_async_function(is_beta=False)
         beta_messages.AsyncMessages.create = create_patched_async_function(is_beta=True)
-        beta_messages.AsyncMessages.with_raw_response = create_patched_async_function(is_beta=True, is_raw=True)
 
     def undo_override(self):
         if self.original_create is not None and self.original_create_async is not None:

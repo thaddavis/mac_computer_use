@@ -97,5 +97,6 @@ streamlit run streamlit.py
 
 ## Debugging
 
-streamlit run streamlit_app.py --server.port=8501 &
 python -m debugpy --listen 5678 --wait-for-client streamlit_app.py
+
+python -m debugpy --listen 5678 --wait-for-client -m streamlit run streamlit_app.py

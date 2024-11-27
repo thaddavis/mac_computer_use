@@ -25,6 +25,7 @@ from anthropic.types.beta import (
 from tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
 
 from agentops import agentops
+agentops.init(api_key="e8715626-31dd-405b-a8b5-996a5bba8583")
 
 BETA_FLAG = "computer-use-2024-10-22"
 
@@ -42,7 +43,7 @@ PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
 }
 
 # print(agentops)
-agentops.init(api_key="ff21ec62-f686-459f-b642-62a8105f6ae8")
+# agentops.init(api_key="ff21ec62-f686-459f-b642-62a8105f6ae8")
 
 # This system prompt is optimized for the Docker environment in this repository and
 # specific tool combinations enabled.
@@ -137,7 +138,7 @@ async def sampling_loop(
 
         # Call the API
         # we use raw_response to provide debug information to streamlit. Your
-        # implementation may be able call the SDK directly with:
+        # implementation may be able call the SDK directly &(&(&(& HttpClient.post(with:
         # raw_response = client.beta.messages.create(
         raw_response = client.beta.messages.with_raw_response.create(
             max_tokens=max_tokens,
